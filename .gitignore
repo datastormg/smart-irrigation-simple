@@ -1,0 +1,5 @@
+*.ino
+*.bin
+*.elf
+.env
+secrets.h
