@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>الري الذكي</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#edf4ef;color:#173e31;font-family:Tahoma,Arial,sans-serif}
+main{max-width:800px;margin:auto;padding:12px}header{display:flex;align-items:center;justify-content:space-between;gap:8px}
+h1{font-size:22px;margin:8px 0}h2{font-size:18px;text-align:center;margin:4px 0 12px}
+button,input,select{font:inherit}button{border:0;border-radius:10px;padding:10px;min-height:42px;cursor:pointer}
+button:disabled,input:disabled{opacity:.45;cursor:default}.wifi{background:white;color:#147a58;max-width:55%;font-size:12px}
+.status,.note{font-size:12px;line-height:1.8}.status{min-height:40px;margin:7px 0}
+.grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px}
+.card{background:white;border-radius:18px;padding:12px 9px;min-width:0}
+.gauge{--p:0;position:relative;display:grid;place-items:center;width:clamp(90px,27vw,145px);aspect-ratio:1;margin:auto;border-radius:50%;background:conic-gradient(#1e9b70 calc(var(--p)*1%),#e6eee9 0)}
+.gauge::before{content:"";position:absolute;inset:10px;border-radius:50%;background:white}.gauge b{position:relative;font-size:clamp(25px,7vw,38px)}
+.row{display:flex;justify-content:space-between;gap:5px;font-size:12px;margin:9px 0}.buttons{display:flex;gap:6px}.buttons button{flex:1;font-size:12px}
+.on{background:#147a58;color:white}.off{background:#fae8e3;color:#963f2c}.auto{width:100%;margin-top:8px;background:#e3f0e8;font-size:12px}
+input[type=range]{width:100%;accent-color:#147a58}.note{color:#637a6d;font-size:11px;min-height:30px}.cal{margin-top:7px}.cal button{font-size:10px;min-height:32px;padding:6px}
+dialog{border:0;border-radius:18px;padding:18px;width:min(94vw,450px);max-height:90dvh;overflow:auto}dialog::backdrop{background:#173e3166}
+label{display:block;margin:12px 0 6px;font-size:13px}.field{display:flex;gap:7px}.field input,.field select{width:100%;min-width:0;padding:10px;border:1px solid #cadbce;border-radius:9px;font-size:16px}
+#ssid,#password{direction:ltr}#netMessage{font-size:12px;line-height:1.8;white-space:pre-wrap}.result{font-size:12px;min-height:24px;margin-top:10px}
+a{color:#147a58}footer{text-align:center;font-size:11px;line-height:1.8;margin:8px 0;color:#637a6d}
+@media(max-height:650px){.gauge{width:90px}.card{padding:8px}.row{margin:6px 0}h2{margin:2px 0 7px}}
+</style>
+</head>
+<body>
+<main>
+<header><h1>🌱 الري الذكي</h1><button class="wifi" id="wifiButton" onclick="openWiFi()">📶 إعداد Wi-Fi</button></header>
+<div class="status" id="status">جارٍ الاتصال…</div>
+<div class="grid" id="cards"></div>
+<div class="result" id="result" role="status"></div>
+<footer>توقف وقائي بعد 60 ثانية من التشغيل. خادم التحكم البعيد عام وتجريبي.</footer>
+</main>
+
+<dialog id="networkDialog">
+<h2>📶 اتصال الجهاز بالإنترنت</h2>
+<form id="wifiForm">
+<label for="networks">اختر شبكة Wi-Fi بتردد 2.4GHz</label>
+<div class="field"><select id="networks" onchange="$('ssid').value=this.value"><option value="">اضغط بحث</option></select><button type="button" id="scanButton" onclick="scanNetworks()">بحث</button></div>
+<label for="ssid">اسم الشبكة</label><div class="field"><input id="ssid" required maxlength="32" autocomplete="off"></div>
+<label for="password">🔒 كلمة مرور الشبكة</label>
+<div class="field"><input id="password" type="password" maxlength="63" autocomplete="new-password"><button type="button" onclick="$('password').type=$('password').type==='password'?'text':'password'">👁</button></div>
+<p class="note">عند الحفظ تتوقف المضختان ويُلغى التلقائي. كلمة المرور الفارغة للشبكات المفتوحة فقط.</p>
+<div id="netMessage"></div>
+<div class="buttons"><button class="on" id="saveButton" type="submit">حفظ واتصال</button><button type="button" onclick="$('networkDialog').close()">إغلاق</button></div>
+</form>
+</dialog>
+
+<dialog id="wifiHelp">
+<h2>📶 إعداد شبكة الجهاز</h2>
+<p class="status">لإعداد الشبكة وأنت بجوار ESP32:</p>
+<ol class="status"><li>اتصل من الجوال بشبكة SMART_IRRIGATION.</li><li>كلمة مرورها Irrigate2026.</li><li>افتح صفحة الإعداد التالية واختر شبكة الراوتر.</li></ol>
+<p><a href="http://192.168.4.1" target="_blank" rel="noopener">فتح صفحة إعداد Wi-Fi</a></p>
+<button onclick="$('wifiHelp').close()">إغلاق</button>
+</dialog>
+
+<script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.4/dist/mqtt.min.js"></script>
+<script>
+const LOCAL=false;
+const TOPIC='smart-irrigation-8c39b6e2';
+const $=id=>document.getElementById(id);
+let latest=null,client=null,live=false,lastLive=0,seenSession=0,seenSeq=0;
+const editing=[false,false],pending=new Map();
+
+for(let i=0;i<2;i++)$('cards').insertAdjacentHTML('beforeend',`
+<section class="card"><h2>العبوة ${i+1}</h2>
+<div class="gauge" id="gauge${i}"><b id="percent${i}">--%</b></div>
+<div class="row"><span>المضخة</span><b id="pump${i}">--</b></div>
+<div class="row"><span>RAW</span><b id="raw${i}">--</b></div>
+<div class="buttons"><button id="on${i}" data-control disabled class="on" onclick="act(${i},'on')">تشغيل</button><button id="off${i}" data-control disabled class="off" onclick="act(${i},'off')">إيقاف</button></div>
+<button id="auto${i}" data-control disabled class="auto" onclick="toggleAuto(${i})">التلقائي</button>
+<div class="row"><span>حد بدء الري</span><b id="label${i}">50%</b></div>
+<input id="range${i}" data-control disabled type="range" min="5" max="90" value="50" aria-label="حد الري للعبوة ${i+1}" oninput="editing[${i}]=true;$('label${i}').textContent=this.value+'%'" onchange="threshold(${i},this.value)">
+${LOCAL?`<div class="buttons cal"><button onclick="calibrate(${i},'dry')">معايرة جاف</button><button onclick="calibrate(${i},'wet')">معايرة مبلل</button></div>`:''}
+<div class="note" id="note${i}"></div></section>`);
+
+function enable(on){document.querySelectorAll('[data-control]').forEach(e=>e.disabled=!on)}
+function stale(message){live=false;enable(false);$('status').textContent=message}
+function render(s){
+  latest=s;
+  if(LOCAL)$('wifiButton').textContent=s.connected?'📶 '+s.ssid+' ▾':'📶 اتصال Wi-Fi ▾';
+  s.channels.forEach((c,i)=>{
+    $('percent'+i).textContent=c.valid?c.moisture+'%':'--';
+    $('gauge'+i).style.setProperty('--p',c.valid?c.moisture:0);
+    $('raw'+i).textContent=c.raw;
+    $('pump'+i).textContent=c.pump?'تعمل':s.measuring&&c.requested?'توقف للقياس':'متوقفة';
+    $('auto'+i).textContent=c.automatic?'التلقائي مفعّل':'التلقائي ملغى';
+    if(!editing[i]){$('range'+i).value=c.threshold;$('label'+i).textContent=c.threshold+'%'}
+    $('note'+i).textContent=c.timedOut?'توقفت بعد 60 ثانية؛ أعد التشغيل عند الحاجة.':!c.valid?'افحص الحساس.':
+      (s.sampleAge>2000?'قراءة محفوظة أثناء التشغيل. ':'')+'توقف الري عند '+Math.min(c.threshold+s.stopGap,100)+'%.';
+  });
+}
+async function request(path,data){
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),5000);
+  try{
+    const options={cache:'no-store',signal:controller.signal};
+    if(data!==undefined){options.method='POST';options.body=new URLSearchParams(data)}
+    const r=await fetch(path,options),text=await r.text();
+    if(!r.ok)throw new Error(text);return text;
+  }finally{clearTimeout(timer)}
+}
+async function poll(){
+  try{
+    const s=JSON.parse(await request('/status'));render(s);enable(true);
+    $('status').textContent=(s.connected?'الراوتر متصل | ':'اتصال مباشر | ')+(s.cloud?'التحكم البعيد متصل':'التحكم البعيد غير متصل');
+  }catch(e){stale('تعذر الاتصال بالمتحكم؛ القراءات قديمة.')}
+  setTimeout(poll,1000);
+}
+function openWiFi(){
+  if(!LOCAL){$('wifiHelp').showModal();return}
+  $('ssid').value=latest?latest.ssid:'';$('password').value='';$('networkDialog').showModal();
+}
+async function scanNetworks(){
+  $('scanButton').disabled=true;
+  try{
+    $('netMessage').textContent='جارٍ البحث…';await request('/scan',{});let data;
+    for(let i=0;i<25;i++){await new Promise(r=>setTimeout(r,500));data=JSON.parse(await request('/networks'));if(!data.scanning)break}
+    if(!data||data.scanning)throw new Error('أعد البحث');
+    $('networks').replaceChildren(new Option('اختر الشبكة',''));const seen=new Set();
+    for(const n of data.networks){if(seen.has(n.ssid))continue;seen.add(n.ssid);$('networks').add(new Option((n.open?'':'🔒 ')+n.ssid,n.ssid))}
+    $('netMessage').textContent='اختر الشبكة وأدخل كلمة المرور.';
+  }catch(e){$('netMessage').textContent=e.message}finally{$('scanButton').disabled=false}
+}
+$('wifiForm').addEventListener('submit',async e=>{
+  e.preventDefault();if(!LOCAL)return;$('saveButton').disabled=true;
+  try{$('netMessage').textContent=await request('/wifi',{ssid:$('ssid').value,password:$('password').value});$('password').value=''}
+  catch(e){$('netMessage').textContent=e.message}finally{$('saveButton').disabled=false}
+});
+async function calibrate(ch,type){try{await request('/calibrate',{ch,type});$('result').textContent='حُفظت المعايرة.'}catch(e){$('result').textContent=e.message}}
+function startRemote(){
+  if(!window.mqtt){stale('تعذر تحميل مكتبة الاتصال؛ أعد تحميل الصفحة.');return}
+  client=mqtt.connect('wss://test.mosquitto.org:8081/mqtt',{
+    clientId:'irrigation-phone-'+Math.random().toString(16).slice(2),clean:true,
+    protocolVersion:4,reconnectPeriod:3000,connectTimeout:10000,queueQoSZero:false
+  });
+  client.on('connect',()=>{
+    seenSession=0;seenSeq=0;stale('الخادم متصل؛ ننتظر المتحكم…');
+    client.subscribe([TOPIC+'/state',TOPIC+'/ack'],{qos:1},(error,granted)=>{
+      if(error||!granted||granted.some(g=>g.qos===128))stale('تعذر الاشتراك؛ أعد المحاولة.')
+    });
+  });
+  client.on('message',(topic,bytes,packet)=>{
+    let s;try{s=JSON.parse(bytes.toString())}catch{return}
+    if(topic===TOPIC+'/ack'){
+      const p=pending.get(s.id);if(!p)return;clearTimeout(p.timer);pending.delete(s.id);
+      s.ok?p.resolve():p.reject(new Error(s.error||'رُفض الأمر'));return;
+    }
+    if(topic!==TOPIC+'/state'||!Array.isArray(s.channels)||s.channels.length!==2||!s.session||!Number.isInteger(s.tick))return;
+    if(s.session!==seenSession){seenSession=s.session;seenSeq=0;live=false}
+    if(!packet.retain&&s.seq>seenSeq&&seenSeq>0){live=true;lastLive=Date.now()}
+    seenSeq=Math.max(seenSeq,s.seq);render(s);enable(live);
+    $('status').textContent=live?'● المتحكم متصل — تحكم عبر الإنترنت':'ننتظر تحديثًا حيًا؛ الأرقام قد تكون قديمة.';
+  });
+  client.on('close',()=>stale('انقطع الاتصال؛ القراءات قديمة والأوامر معطلة.'));
+  client.on('offline',()=>stale('الإنترنت غير متصل.'));
+  client.on('error',()=>stale('الخادم التجريبي غير متاح حاليًا؛ سيعيد الاتصال تلقائيًا.'));
+  setInterval(()=>{if(live&&Date.now()-lastLive>8000)stale('لم تصل بيانات حية؛ الأوامر معطلة.')},1000);
+}
+function send(ch,action,value){
+  if(LOCAL)return request('/control',{ch,action,...(value===undefined?{}:{value})});
+  return new Promise((resolve,reject)=>{
+    if(!client||!client.connected||!live||Date.now()-lastLive>8000){reject(new Error('انتظر اتصال المتحكم'));return}
+    const id=Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,10);
+    const data={id,ch,action,session:latest.session,tick:latest.tick};
+    if(value!==undefined)data.value=Number(value);
+    const timer=setTimeout(()=>{pending.delete(id);reject(new Error('لم يصل تأكيد التنفيذ؛ راقب حالة المضخة.'))},8000);
+    pending.set(id,{resolve,reject,timer});
+    client.publish(TOPIC+'/command',JSON.stringify(data),{qos:1,retain:false},error=>{
+      if(error&&pending.has(id)){clearTimeout(timer);pending.delete(id);reject(error)}
+    });
+  });
+}
+async function act(ch,action,value){
+  try{await send(ch,action,value);$('result').textContent='أكد المتحكم تنفيذ الأمر.'}
+  catch(e){$('result').textContent=e.message}
+}
+function toggleAuto(i){if(latest)act(i,latest.channels[i].automatic?'manual':'auto')}
+async function threshold(i,value){try{await act(i,'threshold',value)}finally{editing[i]=false}}
+if(LOCAL)poll();else startRemote();
+</script>
+</body>
+</html>
