@@ -1,6 +1,7 @@
 # smart-irrigation-simple
 
-# الري الذكي — Smart Irrigation Simple
+# الري الذكي — Smart Irrigation Simple 
+##ا مهم جدا ==> تحديث الكود هو ( Smart_Irrigation_Far_Control_GitHub3 )
 
 مشروع ESP32 NodeMCU لعرض رطوبة عبوتين والتحكم بمضختين من الجوال محليًا وعبر الإنترنت. يستخدم خادم Mosquitto العام الجاهز دون إنشاء حساب MQTT.
 
